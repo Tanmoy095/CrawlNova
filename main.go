@@ -1,93 +1,60 @@
 package main
 
 import (
-	"context"
+	"crawl-nova/crawler"
 	"fmt"
-	"net/http"
 	"sync"
-	"time"
 )
 
-func worker(id int, jobs <-chan string, results chan<- string, wg *sync.WaitGroup) {
-
-	defer wg.Done() //tell main the worker is done when exists
-	client := &http.Client{}
-	for url := range jobs {
-
-		//create a context that auto cancel after 2sec....
-
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-
-		//create a   GET req with using that context
-
-		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-		if err != nil {
-			results <- fmt.Sprintf("Worker %d failed to create request : %v", id, err)
-			cancel() //must call to avoid context memory leaks...
-			continue //skip the job and try next
-
-		}
-
-		//measure request duration..........
-
-		// 3. Measure request duration
-		start := time.Now()
-		resp, err := client.Do(req) //  Executes request with timeout built-in
-		if err != nil {
-			results <- fmt.Sprintf("[Worker %d] Domain: %s - Timeout/Error: %v", id, url, err)
-			cancel() //must call to avoid context memory leaks...
-			continue
-		}
-		resp.Body.Close() //  Always close response body
-
-		// 4. Send result to results channel
-		duration := time.Since(start)
-		results <- fmt.Sprintf("[Worker %d] Domain: %s - Time: %v", id, url, duration)
-	}
-
-}
-
 func main() {
-	// 📝 List of domains (jobs to perform)
+	// Define a list of domains (some are intentionally duplicated for testing deduplication)
 	domains := []string{
 		"https://google.com",
 		"https://amazon.com",
 		"https://facebook.com",
-		"https://invalid.domain", // ❌ Will cause error (bad domain)
+		"https://invalid.domain",
+		"https://google.com",   // duplicate , just to chech the safeset logic
+		"https://facebook.com", // duplicate
+		"https://amazon.com",   // duplicate
 	}
 
-	jobs := make(chan string)    // channel for sending jobs(domains)
-	results := make(chan string) //channel for receiving results from worksers.......
+	// Create channels:
+	jobs := make(chan string)    // Channel for sending jobs (URLs to crawl) to workers
+	results := make(chan string) // Channel for receiving results from workers
 
-	var wg sync.WaitGroup
+	var wg sync.WaitGroup // WaitGroup to track when all workers are done
 
-	//sends all domains into the jobs channel
+	// Initialize a SafeSet for deduplication of URLs
+	deduper := crawler.NewSafeSet()
 
+	// Start a goroutine to send unique (non-duplicate) domains to the jobs channel
 	go func() {
 		for _, domain := range domains {
-			jobs <- domain
+			if deduper.Add(domain) {
+				jobs <- domain // Send domain to job queue if not seen before
+			} else {
+				fmt.Println("✘ Duplicate skipped:", domain) // Log duplicates that are skipped
+			}
 		}
-
-		close(jobs) //tell worker no more job after this ...............................
-
+		close(jobs) // Important: Close the jobs channel to signal no more incoming tasks
 	}()
 
-	//start workers............
+	// Define how many worker goroutines to run concurrently
+	workcount := 5
 
-	workcount := 5 //we will use 5 workers
-
+	// Launch the worker pool
 	for w := 0; w < workcount; w++ {
-		wg.Add(1)
-
-		go worker(w, jobs, results, &wg) //start worker go routine.........
-
+		wg.Add(1)                                     // Increment WaitGroup for each worker
+		go crawler.StartWorker(w, jobs, results, &wg) // Start a worker with an ID
 	}
-	//waits for all workers to finish ,then closes results channel
-	go func() {
-		wg.Wait()
-		close(results)
 
+	// Start a goroutine to wait for all workers to finish and then close results channel
+	go func() {
+		wg.Wait()      // Block until all workers call Done()
+		close(results) // Important: Close results channel so main loop below can finish
 	}()
+
+	// Continuously read from results channel and print the crawl results
 	for res := range results {
 		fmt.Println(res)
 	}
