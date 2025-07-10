@@ -5,6 +5,7 @@ import (
 	"crawl-nova/types"
 	"fmt"
 	"sync"
+	"time"
 )
 
 func main() {
@@ -30,6 +31,8 @@ func main() {
 	// Initialize a SafeSet for deduplication of URLs
 	deduper := crawler.NewSafeSet()
 	MaxDepth := 2
+	rateLimiter := crawler.NewRateLimiter(500 * time.Millisecond)
+	defer rateLimiter.StopAll()
 	// Start a goroutine to send unique (non-duplicate) domains to the jobs channel
 	go func() {
 		for _, domain := range domains {
@@ -52,8 +55,8 @@ func main() {
 
 	// Launch the worker pool
 	for w := 0; w < workcount; w++ {
-		wg.Add(1)                                                        // Increment WaitGroup for each worker
-		go crawler.StartWorker(w, jobs, results, &wg, deduper, MaxDepth) // Start a worker with an ID
+		wg.Add(1)                                                                     // Increment WaitGroup for each worker
+		go crawler.StartWorker(w, jobs, results, &wg, deduper, MaxDepth, rateLimiter) // Start a worker with an ID
 	}
 
 	// Start a goroutine to wait for all workers to finish and then close results channel
