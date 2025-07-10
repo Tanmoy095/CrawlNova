@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-func StartWorker(id int, jobs <-chan string, results chan<- string, wg *sync.WaitGroup) {
+func StartWorker(id int, jobs chan string, results chan<- string, wg *sync.WaitGroup, deduper *SafeSet) {
 	defer wg.Done() //tell main the worker is done when exists
 	client := &http.Client{}
 	for url := range jobs {
@@ -37,7 +37,24 @@ func StartWorker(id int, jobs <-chan string, results chan<- string, wg *sync.Wai
 			cancel() //must call to avoid context memory leaks...
 			continue
 		}
+
+		//must extract links before closing the resp.body
+
+		links, err := ExtractLinks(resp.Body, url)
 		resp.Body.Close() //  Always close response body
+		if err != nil {
+			results <- fmt.Sprintf("[Worker %d] Domain: %s - Error parsing HTML: %v", id, url, err)
+		} else {
+			for _, link := range links {
+				if deduper.Add(link) { //  Push back unseen links
+					jobs <- link
+					results <- fmt.Sprintf("[Worker %d] Discovered: %s", id, link)
+				}
+				// Optional: show all links, even if duplicate
+				// results <- fmt.Sprintf("[Worker %d] Found link on %s → %s", id, url, link)
+			}
+
+		}
 
 		// 4. Send result to results channel
 		duration := time.Since(start)

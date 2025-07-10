@@ -36,7 +36,8 @@ func main() {
 				fmt.Println("✘ Duplicate skipped:", domain) // Log duplicates that are skipped
 			}
 		}
-		close(jobs) // Important: Close the jobs channel to signal no more incoming tasks
+		//stop jobs..  logic will implement latter
+		//close(jobs) // Important: Close the jobs channel to signal no more incoming tasks
 	}()
 
 	// Define how many worker goroutines to run concurrently
@@ -44,8 +45,8 @@ func main() {
 
 	// Launch the worker pool
 	for w := 0; w < workcount; w++ {
-		wg.Add(1)                                     // Increment WaitGroup for each worker
-		go crawler.StartWorker(w, jobs, results, &wg) // Start a worker with an ID
+		wg.Add(1)                                              // Increment WaitGroup for each worker
+		go crawler.StartWorker(w, jobs, results, &wg, deduper) // Start a worker with an ID
 	}
 
 	// Start a goroutine to wait for all workers to finish and then close results channel
