@@ -2,16 +2,17 @@ package crawler
 
 import (
 	"context"
+	"crawl-nova/types"
 	"fmt"
 	"net/http"
 	"sync"
 	"time"
 )
 
-func StartWorker(id int, jobs chan string, results chan<- string, wg *sync.WaitGroup, deduper *SafeSet) {
+func StartWorker(id int, jobs chan types.CrawlJob, results chan<- string, wg *sync.WaitGroup, deduper *SafeSet, MaxDepth int) {
 	defer wg.Done() //tell main the worker is done when exists
 	client := &http.Client{}
-	for url := range jobs {
+	for job := range jobs {
 
 		//create a context that auto cancel after 2sec....
 
@@ -19,7 +20,7 @@ func StartWorker(id int, jobs chan string, results chan<- string, wg *sync.WaitG
 
 		//create a	 GET req with using that context
 
-		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		req, err := http.NewRequestWithContext(ctx, "GET", job.URL, nil)
 		if err != nil {
 			results <- fmt.Sprintf("Worker %d failed to create request : %v", id, err)
 			cancel() //must call to avoid context memory leaks...
@@ -29,36 +30,34 @@ func StartWorker(id int, jobs chan string, results chan<- string, wg *sync.WaitG
 
 		//measure request duration..........
 
-		// 3. Measure request duration
 		start := time.Now()
+
 		resp, err := client.Do(req) //  Executes request with timeout built-in
 		if err != nil {
-			results <- fmt.Sprintf("[Worker %d] Domain: %s - Timeout/Error: %v", id, url, err)
+			results <- fmt.Sprintf("[Worker %d] Domain: %s - Timeout/Error: %v", id, job.URL, err)
 			cancel() //must call to avoid context memory leaks...
 			continue
 		}
 
 		//must extract links before closing the resp.body
 
-		links, err := ExtractLinks(resp.Body, url)
+		links, err := ExtractLinks(resp.Body, job.URL)
 		resp.Body.Close() //  Always close response body
 		if err != nil {
-			results <- fmt.Sprintf("[Worker %d] Domain: %s - Error parsing HTML: %v", id, url, err)
-		} else {
+			results <- fmt.Sprintf("[Worker %d]  %s - Parse Error: %v", id, job.URL, err)
+		} else if job.Depth < MaxDepth {
 			for _, link := range links {
-				if deduper.Add(link) { //  Push back unseen links
-					jobs <- link
-					results <- fmt.Sprintf("[Worker %d] Discovered: %s", id, link)
+				if deduper.Add(link) {
+					jobs <- types.CrawlJob{
+						URL:   link,
+						Depth: job.Depth + 1,
+					}
+					results <- fmt.Sprintf("[Worker %d] ➕ Discovered: %s", id, link)
 				}
-				// Optional: show all links, even if duplicate
-				// results <- fmt.Sprintf("[Worker %d] Found link on %s → %s", id, url, link)
 			}
-
 		}
 
-		// 4. Send result to results channel
 		duration := time.Since(start)
-		results <- fmt.Sprintf("[Worker %d] Domain: %s - Time: %v", id, url, duration)
+		results <- fmt.Sprintf("[Worker %d]  Crawled: %s in %v", id, job.URL, duration)
 	}
-
 }
